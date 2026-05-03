@@ -1,0 +1,14 @@
+# Binaries
+/tcmuxer
+/cmd/tcmuxer/tcmuxer
+
+# Go test/coverage artifacts
+*.test
+*.out
+
+# Build output
+/dist/
+
+# Editor / IDE
+/.idea/
+/.vscode/

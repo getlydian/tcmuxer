@@ -19,7 +19,7 @@ func TestCache_SetSnapshot(t *testing.T) {
 	c := NewCache(func() time.Time { return now })
 
 	doc := map[string]any{"http": map[string]any{}}
-	c.Set("a", doc)
+	c.Set("a", "a", doc)
 
 	snap := c.Snapshot()
 	got, ok := snap["a"]
@@ -45,7 +45,7 @@ func TestCache_FailThenSet_StalenessReset(t *testing.T) {
 	c := NewCache(func() time.Time { return now })
 
 	now = time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
-	c.Set("a", map[string]any{"v": 1})
+	c.Set("a", "a", map[string]any{"v": 1})
 
 	now = now.Add(2 * time.Minute)
 	c.Fail("a", errors.New("boom"))
@@ -63,7 +63,7 @@ func TestCache_FailThenSet_StalenessReset(t *testing.T) {
 	}
 
 	now = now.Add(time.Minute)
-	c.Set("a", map[string]any{"v": 2})
+	c.Set("a", "a", map[string]any{"v": 2})
 
 	snap = c.Snapshot()["a"]
 	if snap.Staleness != 0 {
@@ -98,8 +98,8 @@ func TestCache_FailWithoutPriorSuccess(t *testing.T) {
 
 func TestCache_Drop(t *testing.T) {
 	c := NewCache(nil)
-	c.Set("a", map[string]any{})
-	c.Set("b", map[string]any{})
+	c.Set("a", "a", map[string]any{})
+	c.Set("b", "b", map[string]any{})
 	c.Drop("a")
 
 	snap := c.Snapshot()
@@ -119,7 +119,7 @@ func TestCache_Concurrent(t *testing.T) {
 		wg.Add(2)
 		go func(i int) {
 			defer wg.Done()
-			c.Set("k", map[string]any{"i": i})
+			c.Set("k", "k", map[string]any{"i": i})
 		}(i)
 		go func() {
 			defer wg.Done()
@@ -135,7 +135,7 @@ func TestCache_Concurrent(t *testing.T) {
 
 func TestCache_SnapshotIsCopy(t *testing.T) {
 	c := NewCache(nil)
-	c.Set("a", map[string]any{"v": 1})
+	c.Set("a", "a", map[string]any{"v": 1})
 	snap := c.Snapshot()
 	// Mutating the snapshot's outer map must not affect the cache.
 	delete(snap, "a")

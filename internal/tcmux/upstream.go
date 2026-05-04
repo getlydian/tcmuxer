@@ -23,7 +23,12 @@ type Upstream struct {
 // Entry is one upstream's last-known-good cache slot. A zero LastGood
 // time means "never succeeded"; in that case Doc is nil and the
 // upstream contributes nothing to the merged output.
+//
+// Namespace is the merge namespace the upstream was registered under —
+// stored on the Entry so /config can iterate the cache snapshot in
+// namespace order without a second registry lookup.
 type Entry struct {
+	Namespace string
 	Doc       map[string]any
 	LastGood  time.Time
 	Staleness time.Duration
@@ -47,14 +52,19 @@ func NewCache(now func() time.Time) *Cache {
 }
 
 // Set records a successful poll: stores the parsed document, stamps
-// LastGood, and clears Staleness and LastErr.
-func (c *Cache) Set(id string, doc map[string]any) {
+// LastGood, clears Staleness/LastErr, and remembers the namespace this
+// upstream merges under. Pass an empty namespace to leave the existing
+// value unchanged (older tests that don't care about namespace use this).
+func (c *Cache) Set(id, namespace string, doc map[string]any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.m[id]
 	if !ok {
 		e = &Entry{}
 		c.m[id] = e
+	}
+	if namespace != "" {
+		e.Namespace = namespace
 	}
 	e.Doc = doc
 	e.LastGood = c.now()
@@ -149,7 +159,7 @@ func (p *Poller) pollOnce(ctx context.Context, client *http.Client, cache *Cache
 			"id", p.Up.ID, "namespace", p.Up.Namespace, "url", p.Up.URL, "err", err)
 		return
 	}
-	cache.Set(p.Up.ID, doc)
+	cache.Set(p.Up.ID, p.Up.Namespace, doc)
 	log.Debug("upstream poll ok",
 		"id", p.Up.ID, "namespace", p.Up.Namespace, "url", p.Up.URL)
 }

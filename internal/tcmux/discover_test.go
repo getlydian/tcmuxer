@@ -160,8 +160,8 @@ func TestReconciler_DropsCacheEntryOnRemove(t *testing.T) {
 	defer cancel()
 
 	cache := NewCache(nil)
-	cache.Set("a", map[string]any{"v": 1})
-	cache.Set("b", map[string]any{"v": 2})
+	cache.Set("a", "a", map[string]any{"v": 1})
+	cache.Set("b", "b", map[string]any{"v": 2})
 
 	r := NewReconciler(ctx, fs.Spawn, cache, discardLog())
 	r.Apply([]Upstream{mkUp("a", "http://a"), mkUp("b", "http://b")})

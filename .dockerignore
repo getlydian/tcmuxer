@@ -1,0 +1,22 @@
+.git
+.gitignore
+.github
+.idea
+.vscode
+
+# Markdown — keep README, drop the rest (design notes, plans, changelogs)
+*.md
+!README.md
+
+# Test artifacts
+*.test
+*.out
+
+# Local build output
+dist/
+tcmuxer
+cmd/tcmuxer/tcmuxer
+
+# Docker
+Dockerfile
+.dockerignore

@@ -37,6 +37,7 @@ type config struct {
 	interval      time.Duration
 	timeout       time.Duration
 	maxStaleness  time.Duration
+	reconcile     time.Duration
 	staleSweep    time.Duration
 	shutdownGrace time.Duration
 }
@@ -64,15 +65,19 @@ func run(ctx context.Context, args []string, environ []string, stdout, stderr io
 	if cfg.maxStaleness, err = envDuration(env, "TCMUXER_MAX_STALENESS", 10*time.Minute); err != nil {
 		return err
 	}
+	if cfg.reconcile, err = envDuration(env, "TCMUXER_RECONCILE", tcmux.DefaultReconcile); err != nil {
+		return err
+	}
 
 	fs := flag.NewFlagSet("tcmuxer", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&cfg.listen, "listen", cfg.listen, "address to listen on (TCMUXER_LISTEN)")
-	fs.StringVar(&cfg.backend, "backend", cfg.backend, "discovery backend: static (TCMUXER_BACKEND)")
+	fs.StringVar(&cfg.backend, "backend", cfg.backend, "discovery backend: static|swarm (TCMUXER_BACKEND)")
 	fs.StringVar(&cfg.staticFile, "static-file", cfg.staticFile, "path to static upstream YAML (TCMUXER_STATIC_FILE)")
 	fs.DurationVar(&cfg.interval, "interval", cfg.interval, "default poll interval (TCMUXER_INTERVAL)")
 	fs.DurationVar(&cfg.timeout, "timeout", cfg.timeout, "default poll timeout (TCMUXER_TIMEOUT)")
 	fs.DurationVar(&cfg.maxStaleness, "max-staleness", cfg.maxStaleness, "drop cache entries older than this (TCMUXER_MAX_STALENESS)")
+	fs.DurationVar(&cfg.reconcile, "reconcile", cfg.reconcile, "swarm: how often to re-list services (TCMUXER_RECONCILE)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -185,8 +190,15 @@ func buildBackend(cfg config, log *slog.Logger) (tcmux.Backend, error) {
 			return nil, fmt.Errorf("backend=static requires TCMUXER_STATIC_FILE / -static-file")
 		}
 		return &tcmux.StaticBackend{Path: cfg.staticFile, Log: log}, nil
+	case "swarm":
+		return &tcmux.SwarmBackend{
+			Reconcile:       cfg.reconcile,
+			DefaultInterval: cfg.interval,
+			DefaultTimeout:  cfg.timeout,
+			Log:             log,
+		}, nil
 	default:
-		return nil, fmt.Errorf("unknown backend %q (only \"static\" is supported)", cfg.backend)
+		return nil, fmt.Errorf("unknown backend %q (want static|swarm)", cfg.backend)
 	}
 }
 

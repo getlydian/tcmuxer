@@ -174,7 +174,7 @@ func fetchJSON(ctx context.Context, client *http.Client, url string) (map[string
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
 		// Drain a bit so the connection can be reused.
 		_, _ = io.CopyN(io.Discard, resp.Body, 1<<14)

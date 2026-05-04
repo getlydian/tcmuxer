@@ -323,9 +323,8 @@ func TestPoller_StopsOnContextCancel(t *testing.T) {
 }
 
 type fakeClock struct {
-	mu      sync.Mutex
-	t       time.Time
-	advance time.Duration
+	mu sync.Mutex
+	t  time.Time
 }
 
 func (c *fakeClock) Now() time.Time {

@@ -60,7 +60,7 @@ func TestRunStaticEndToEnd(t *testing.T) {
 			continue
 		}
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		var doc map[string]any
 		if err := json.Unmarshal(body, &doc); err != nil {
 			time.Sleep(20 * time.Millisecond)
@@ -81,7 +81,7 @@ func TestRunStaticEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("healthz: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("healthz status=%d, want 200", resp.StatusCode)
 	}

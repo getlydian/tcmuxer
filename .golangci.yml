@@ -1,9 +1,14 @@
+version: "2"
+
 linters:
-  disable-all: true
+  default: none
   enable:
     - govet
     - staticcheck
     - errcheck
+    - unused
+
+formatters:
+  enable:
     - gofmt
     - goimports
-    - unused

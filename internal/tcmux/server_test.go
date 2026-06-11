@@ -379,6 +379,60 @@ func TestServer_Config_CertResolverInjection(t *testing.T) {
 	}
 }
 
+// A ?certresolver= request must not leak the stamped resolver into the
+// cache's shared Doc. Merge assigns absent keys by reference, so the
+// merged document aliases the cached router/tls maps; mutating them in
+// place would persist certResolver into every later request — including
+// the resolver-less poll the terminating Traefik makes, disabling its
+// router with "nonexistent certificate resolver".
+func TestServer_Config_CertResolverDoesNotLeak(t *testing.T) {
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	c := NewCache(func() time.Time { return now })
+	seedEntry(c, "app", Entry{
+		Namespace: "app", LastGood: now,
+		Doc: map[string]any{
+			"http": map[string]any{
+				"routers": map[string]any{
+					"catchall": map[string]any{
+						"rule": "HostRegexp(`[^.]+\\.example\\.com`)",
+						"tls":  map[string]any{"domains": []any{map[string]any{"main": "example.com"}}},
+					},
+				},
+			},
+		},
+	})
+	s := newTestServer(t, c)
+
+	resolverOf := func(query string) any {
+		t.Helper()
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/config"+query, nil))
+		var got map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		tls := got["http"].(map[string]any)["routers"].(map[string]any)["catchall"].(map[string]any)["tls"].(map[string]any)
+		return tls["certResolver"]
+	}
+
+	// Issuer poll stamps the resolver...
+	if cr := resolverOf("?certresolver=dns"); cr != "dns" {
+		t.Fatalf("issuer poll certResolver = %v, want dns", cr)
+	}
+	// ...but a subsequent resolver-less poll must be clean.
+	if cr := resolverOf(""); cr != nil {
+		t.Fatalf("gateway poll certResolver = %v, want absent (leaked from prior issuer poll)", cr)
+	}
+	// And the cache's own Doc must be untouched.
+	c.mu.Lock()
+	doc := c.m["app"].Doc
+	c.mu.Unlock()
+	tls := doc["http"].(map[string]any)["routers"].(map[string]any)["catchall"].(map[string]any)["tls"].(map[string]any)
+	if _, set := tls["certResolver"]; set {
+		t.Fatalf("cache Doc was mutated: tls=%#v", tls)
+	}
+}
+
 func TestInjectCertResolver_Tolerates(t *testing.T) {
 	// Must not panic or mangle on documents that don't match the
 	// expected http.routers shape, or on the bare `tls: true` form.

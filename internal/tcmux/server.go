@@ -97,6 +97,19 @@ func (s *Server) serveConfig(w http.ResponseWriter, r *http.Request) {
 		Merge(merged, c.doc, c.namespace, s.recordCollision)
 	}
 
+	// Optional issuance annotation. A router that declares its own `tls`
+	// block opts out of Traefik's entrypoint-level TLS defaults entirely
+	// (including any default `certResolver`), so in a split-issuer
+	// topology the ACME-issuing Traefik never sees a resolver on such a
+	// router and never issues its cert. `?certresolver=<name>` re-supplies
+	// the resolver to exactly those routers, for the poller that issues.
+	// The poller that only serves omits the param and gets the document
+	// untouched (it has no resolver registered; naming one would disable
+	// the router). See README "Per-consumer certResolver injection".
+	if name := r.URL.Query().Get("certresolver"); name != "" {
+		injectCertResolver(merged, name)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(merged); err != nil {
 		s.log.Warn("encode /config response", "err", err)
@@ -164,6 +177,43 @@ func (s *Server) serveDebug(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(debugPayload{Upstreams: ups, Collisions: cols}); err != nil {
 		s.log.Warn("encode /debug response", "err", err)
+	}
+}
+
+// injectCertResolver stamps certResolver=name onto every http.router that
+// already carries a `tls` block but hasn't set its own resolver. Routers
+// without a `tls` block are left alone: they still inherit the issuer's
+// entrypoint-level TLS defaults (resolver included), so they need no
+// help. An existing per-router certResolver is never overwritten — an
+// app that names its own resolver knows what it wants.
+//
+// doc is mutated in place. A router whose `tls` value isn't an object
+// (e.g. the bare `tls: true` form some configs use) is skipped: there's
+// no map to set a key on, and that form already inherits the entrypoint
+// default anyway. Scope is http.routers only; TCP/UDP ACME isn't muxed
+// here.
+func injectCertResolver(doc map[string]any, name string) {
+	http, ok := doc["http"].(map[string]any)
+	if !ok {
+		return
+	}
+	routers, ok := http["routers"].(map[string]any)
+	if !ok {
+		return
+	}
+	for _, rv := range routers {
+		router, ok := rv.(map[string]any)
+		if !ok {
+			continue
+		}
+		tls, ok := router["tls"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, set := tls["certResolver"]; set {
+			continue
+		}
+		tls["certResolver"] = name
 	}
 }
 

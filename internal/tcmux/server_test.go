@@ -306,6 +306,105 @@ func TestServer_Debug_ExposesCollisions(t *testing.T) {
 	}
 }
 
+func TestServer_Config_CertResolverInjection(t *testing.T) {
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	c := NewCache(func() time.Time { return now })
+
+	seedEntry(c, "app", Entry{
+		Namespace: "app", LastGood: now,
+		Doc: map[string]any{
+			"http": map[string]any{
+				"routers": map[string]any{
+					// Wildcard router: declares its own tls block (with
+					// domains) and so loses the entrypoint default resolver.
+					"catchall": map[string]any{
+						"rule": "HostRegexp(`[^.]+\\.example\\.com`)",
+						"tls": map[string]any{
+							"domains": []any{map[string]any{
+								"main": "example.com",
+								"sans": []any{"*.example.com"},
+							}},
+						},
+					},
+					// Plain router: no tls block, inherits the entrypoint
+					// default on the issuer; must be left untouched.
+					"plain": map[string]any{"rule": "Host(`plain.example.com`)"},
+					// Router that named its own resolver; never overwrite it.
+					"opinionated": map[string]any{
+						"rule": "Host(`opin.example.com`)",
+						"tls":  map[string]any{"certResolver": "other"},
+					},
+				},
+			},
+		},
+	})
+	s := newTestServer(t, c)
+
+	routersFor := func(query string) map[string]any {
+		t.Helper()
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/config"+query, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v\nbody=%s", err, w.Body.String())
+		}
+		return got["http"].(map[string]any)["routers"].(map[string]any)
+	}
+
+	// Edge view (no param): document untouched. The catchall keeps its
+	// tls.domains but gains no resolver — exactly what the resolver-less
+	// gateway needs to keep the router enabled.
+	edge := routersFor("")
+	if tls, ok := edge["catchall"].(map[string]any)["tls"].(map[string]any); !ok {
+		t.Fatal("edge: catchall lost its tls block")
+	} else if _, set := tls["certResolver"]; set {
+		t.Errorf("edge: catchall.tls.certResolver = %v, want absent", tls["certResolver"])
+	}
+
+	// Issuer view (?certresolver=dns): the tls-bearing router gains the
+	// resolver; the plain router stays bare; the opinionated router keeps
+	// its own.
+	iss := routersFor("?certresolver=dns")
+	if cr := iss["catchall"].(map[string]any)["tls"].(map[string]any)["certResolver"]; cr != "dns" {
+		t.Errorf("issuer: catchall.tls.certResolver = %v, want dns", cr)
+	}
+	if _, hasTLS := iss["plain"].(map[string]any)["tls"]; hasTLS {
+		t.Errorf("issuer: plain router gained a tls block, want none: %#v", iss["plain"])
+	}
+	if cr := iss["opinionated"].(map[string]any)["tls"].(map[string]any)["certResolver"]; cr != "other" {
+		t.Errorf("issuer: opinionated.tls.certResolver = %v, want preserved 'other'", cr)
+	}
+}
+
+func TestInjectCertResolver_Tolerates(t *testing.T) {
+	// Must not panic or mangle on documents that don't match the
+	// expected http.routers shape, or on the bare `tls: true` form.
+	cases := []map[string]any{
+		{},
+		{"http": "not-a-map"},
+		{"http": map[string]any{"routers": "not-a-map"}},
+		{"http": map[string]any{"routers": map[string]any{"r": "not-a-map"}}},
+		{"http": map[string]any{"routers": map[string]any{
+			"r": map[string]any{"tls": true}, // bare tls:true, not an object
+		}}},
+	}
+	for _, doc := range cases {
+		injectCertResolver(doc, "dns") // just assert no panic
+	}
+
+	// The bare `tls: true` form is left as-is (can't set a key on a bool).
+	doc := map[string]any{"http": map[string]any{"routers": map[string]any{
+		"r": map[string]any{"tls": true},
+	}}}
+	injectCertResolver(doc, "dns")
+	if tls := doc["http"].(map[string]any)["routers"].(map[string]any)["r"].(map[string]any)["tls"]; tls != true {
+		t.Errorf("tls:true was modified to %#v, want left as true", tls)
+	}
+}
+
 func TestServer_MethodNotAllowed(t *testing.T) {
 	s := newTestServer(t, NewCache(nil))
 	for _, path := range []string{"/config", "/healthz", "/debug"} {

@@ -207,37 +207,53 @@ redeploy without it. No tcmuxer restart needed.
   staleness, last error per upstream, and cumulative merge collision
   counters.
 
-### `?certresolver=<name>` on `/config`
+### `?certresolver=<name>` / `?stripcertresolvers` on `/config`
 
-`GET /config?certresolver=<name>` returns the merged document with
-`tls.certResolver=<name>` stamped onto every `http.router` that **already
-declares its own `tls` block** but hasn't named a resolver. Routers
-without a `tls` block, and routers that already set `certResolver`, are
-left untouched. Omit the param (the default) and the document is served
-verbatim.
+These two mutually-exclusive params shape the per-router `tls.certResolver`
+for the two halves of a **split-issuer topology**: one Traefik issues certs
+via ACME, a separate Traefik (or several, for HA) only terminates TLS from a
+shared cert store and has **no** `certResolver` registered.
 
-This exists for **split-issuer topologies**: one Traefik issues certs via
-ACME, a separate Traefik (or several, for HA) only terminates TLS from a
-shared cert store and has **no** `certResolver` registered. The catch is
-Traefik's TLS-inheritance rule — *a router that declares any `tls` field
-opts out of the entrypoint-level TLS defaults entirely, resolver
-included.* So a router carrying `tls.domains` (e.g. to request a wildcard)
-never inherits the issuer's default resolver and its cert is never issued.
+- `GET /config?certresolver=<name>` (the **issuer** poll) stamps
+  `tls.certResolver=<name>` onto every `http.router` that **already declares
+  its own `tls` block** but hasn't named a resolver. Routers without a `tls`
+  block, and routers that already set `certResolver`, are left untouched.
+- `GET /config?stripcertresolvers` (the **terminating** poll) removes
+  `tls.certResolver` from every router, regardless of who set it. Other `tls`
+  fields (`domains`, `options`, …) are preserved; routers without a `tls`
+  block are untouched.
+
+The catch this works around is Traefik's TLS-inheritance rule — *a router
+that declares any `tls` field opts out of the entrypoint-level TLS defaults
+entirely, resolver included.* So a router carrying `tls.domains` (e.g. a
+wildcard) never inherits the issuer's default resolver and its cert is never
+issued; the issuer poll re-supplies it. Conversely, a router an app pinned to
+a specific resolver itself (e.g. `tls.certResolver=http` to force HTTP-01 for
+a non-owned domain) carries that name to the terminating Traefik verbatim,
+which would disable the router (`nonexistent certificate resolver`) since it
+has no resolver registered; the terminating poll strips it.
 
 Point each Traefik at the variant it needs:
 
 ```yaml
-# issuing Traefik — gets the resolver stamped on tls-bearing routers
+# issuing Traefik — gets the resolver stamped on resolver-less tls routers,
+# and keeps any resolver an app pinned itself
 --providers.http.endpoint=http://tcmuxer/config?certresolver=dns
 
-# terminating Traefik(s) — verbatim; naming a resolver it doesn't have
-# would disable the router with "nonexistent certificate resolver"
---providers.http.endpoint=http://tcmuxer/config
+# terminating Traefik(s) — every per-router resolver stripped; naming any
+# resolver it doesn't have would disable the router
+--providers.http.endpoint=http://tcmuxer/config?stripcertresolvers
 ```
 
-tcmuxer stays generic: it knows nothing about "issuer" vs "edge" roles —
-only "stamp this resolver name, or don't." Scope is `http.routers`;
-TCP/UDP ACME is not handled.
+> Note: the terminating poll was previously the bare `/config` (verbatim).
+> That only stayed correct while tcmuxer was the *only* thing adding
+> resolvers (issuer-poll-only). Once an upstream app sets a resolver itself,
+> the terminating poll must use `?stripcertresolvers` to stay resolver-free.
+
+If both params are present, strip wins. tcmuxer stays generic: it knows
+nothing about "issuer" vs "edge" roles — only "stamp this resolver name,
+strip all of them, or neither." Scope is `http.routers`; TCP/UDP ACME is
+not handled.
 
 ## Merge semantics
 

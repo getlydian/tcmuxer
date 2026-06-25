@@ -103,11 +103,25 @@ func (s *Server) serveConfig(w http.ResponseWriter, r *http.Request) {
 	// topology the ACME-issuing Traefik never sees a resolver on such a
 	// router and never issues its cert. `?certresolver=<name>` re-supplies
 	// the resolver to exactly those routers, for the poller that issues.
-	// The poller that only serves omits the param and gets the document
-	// untouched (it has no resolver registered; naming one would disable
-	// the router). See README "Per-consumer certResolver injection".
-	if name := r.URL.Query().Get("certresolver"); name != "" {
-		merged = injectCertResolver(merged, name)
+	// See README "Per-consumer certResolver injection".
+	//
+	// `?stripcertresolvers` is the mirror image, for the TERMINATING
+	// poller. When an upstream app sets a per-router resolver itself (e.g.
+	// `certResolver: http` to pin a non-owned domain to HTTP-01 issuance),
+	// that name reaches the terminating Traefik verbatim — but it has no
+	// resolver registered and would disable the router with "nonexistent
+	// certificate resolver". This flag drops every per-router resolver so
+	// the terminating poll is always resolver-free, regardless of what the
+	// app declared. The issuer poll (`?certresolver=<name>`) instead keeps
+	// app-set resolvers and only fills in the missing ones. The two flags
+	// are mutually exclusive; strip wins if both are somehow present.
+	switch {
+	case r.URL.Query().Has("stripcertresolvers"):
+		merged = stripCertResolvers(merged)
+	default:
+		if name := r.URL.Query().Get("certresolver"); name != "" {
+			merged = injectCertResolver(merged, name)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -245,6 +259,81 @@ func injectCertResolver(doc map[string]any, name string) map[string]any {
 	}
 	if newRouters == nil {
 		return doc // nothing stamped; original is already correct
+	}
+
+	newHTTP := make(map[string]any, len(httpv))
+	for k, v := range httpv {
+		newHTTP[k] = v
+	}
+	newHTTP["routers"] = newRouters
+	newDoc := make(map[string]any, len(doc))
+	for k, v := range doc {
+		newDoc[k] = v
+	}
+	newDoc["http"] = newHTTP
+	return newDoc
+}
+
+// stripCertResolvers returns doc with `certResolver` removed from every
+// http.router's `tls` block. It is the terminating-poll counterpart to
+// injectCertResolver: the issuing Traefik wants resolvers present, the
+// terminating Traefik wants them all gone (it has none registered, so any
+// name disables the router). A router with no `tls` block, or a `tls` block
+// with no resolver, is left untouched.
+//
+// Copy-on-write, for the same reason injectCertResolver is: the merged
+// document aliases the cache's stored Doc (Merge assigns absent keys by
+// reference), so mutating in place would corrupt later polls — including the
+// issuer's, which must still see app-declared resolvers. Every map this
+// rebuilds is fresh; untouched subtrees are shared by reference.
+func stripCertResolvers(doc map[string]any) map[string]any {
+	httpv, ok := doc["http"].(map[string]any)
+	if !ok {
+		return doc
+	}
+	routers, ok := httpv["routers"].(map[string]any)
+	if !ok {
+		return doc
+	}
+
+	var newRouters map[string]any // built lazily on the first change
+	for rn, rv := range routers {
+		router, ok := rv.(map[string]any)
+		if !ok {
+			continue
+		}
+		tls, ok := router["tls"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, set := tls["certResolver"]; !set {
+			continue
+		}
+		// Rebuild this router and its tls map without the resolver rather
+		// than mutating the shared originals.
+		newTLS := make(map[string]any, len(tls))
+		for k, v := range tls {
+			if k == "certResolver" {
+				continue
+			}
+			newTLS[k] = v
+		}
+		newRouter := make(map[string]any, len(router))
+		for k, v := range router {
+			newRouter[k] = v
+		}
+		newRouter["tls"] = newTLS
+
+		if newRouters == nil {
+			newRouters = make(map[string]any, len(routers))
+			for k, v := range routers {
+				newRouters[k] = v
+			}
+		}
+		newRouters[rn] = newRouter
+	}
+	if newRouters == nil {
+		return doc // nothing stripped; original is already correct
 	}
 
 	newHTTP := make(map[string]any, len(httpv))

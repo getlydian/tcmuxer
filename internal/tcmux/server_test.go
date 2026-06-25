@@ -459,6 +459,102 @@ func TestInjectCertResolver_Tolerates(t *testing.T) {
 	}
 }
 
+// The terminating poll (?stripcertresolvers) must drop every per-router
+// resolver — both those an app declared itself (e.g. `http` to pin a
+// non-owned domain to HTTP-01) and any other — so the resolver-less gateway
+// never disables a router with "nonexistent certificate resolver". Routers
+// without a resolver, and the cache's shared Doc, must be untouched.
+func TestServer_Config_StripCertResolvers(t *testing.T) {
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	c := NewCache(func() time.Time { return now })
+	seedEntry(c, "app", Entry{
+		Namespace: "app", LastGood: now,
+		Doc: map[string]any{
+			"http": map[string]any{
+				"routers": map[string]any{
+					// App pinned this non-owned domain to HTTP-01 itself.
+					"custom": map[string]any{
+						"rule": "Host(`plaan.kuressaareteater.ee`)",
+						"tls":  map[string]any{"certResolver": "http"},
+					},
+					// Wildcard router with domains but no resolver: keep as-is.
+					"catchall": map[string]any{
+						"rule": "HostRegexp(`[^.]+\\.example\\.com`)",
+						"tls":  map[string]any{"domains": []any{map[string]any{"main": "example.com"}}},
+					},
+					// No tls block: untouched.
+					"plain": map[string]any{"rule": "Host(`plain.example.com`)"},
+				},
+			},
+		},
+	})
+	s := newTestServer(t, c)
+
+	routersFor := func(query string) map[string]any {
+		t.Helper()
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/config"+query, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v\nbody=%s", err, w.Body.String())
+		}
+		return got["http"].(map[string]any)["routers"].(map[string]any)
+	}
+
+	// Issuer poll keeps the app-set resolver and fills the missing one.
+	iss := routersFor("?certresolver=dns")
+	if cr := iss["custom"].(map[string]any)["tls"].(map[string]any)["certResolver"]; cr != "http" {
+		t.Errorf("issuer: custom.tls.certResolver = %v, want preserved 'http'", cr)
+	}
+	if cr := iss["catchall"].(map[string]any)["tls"].(map[string]any)["certResolver"]; cr != "dns" {
+		t.Errorf("issuer: catchall.tls.certResolver = %v, want stamped 'dns'", cr)
+	}
+
+	// Gateway poll strips every resolver but preserves the rest of tls.
+	gw := routersFor("?stripcertresolvers")
+	if _, set := gw["custom"].(map[string]any)["tls"].(map[string]any)["certResolver"]; set {
+		t.Errorf("gateway: custom.tls.certResolver present, want stripped")
+	}
+	if tls := gw["catchall"].(map[string]any)["tls"].(map[string]any); tls["domains"] == nil {
+		t.Errorf("gateway: catchall lost tls.domains, want preserved: %#v", tls)
+	}
+	if _, hasTLS := gw["plain"].(map[string]any)["tls"]; hasTLS {
+		t.Errorf("gateway: plain router gained a tls block, want none")
+	}
+
+	// The cache's own Doc must be untouched after both polls.
+	c.mu.Lock()
+	doc := c.m["app"].Doc
+	c.mu.Unlock()
+	tls := doc["http"].(map[string]any)["routers"].(map[string]any)["custom"].(map[string]any)["tls"].(map[string]any)
+	if cr := tls["certResolver"]; cr != "http" {
+		t.Fatalf("cache Doc was mutated: custom.tls.certResolver = %v, want 'http'", cr)
+	}
+}
+
+func TestStripCertResolvers_Tolerates(t *testing.T) {
+	// Must not panic or mangle on documents that don't match the expected
+	// shape, and must no-op when there's nothing to strip.
+	cases := []map[string]any{
+		{},
+		{"http": "not-a-map"},
+		{"http": map[string]any{"routers": "not-a-map"}},
+		{"http": map[string]any{"routers": map[string]any{"r": "not-a-map"}}},
+		{"http": map[string]any{"routers": map[string]any{
+			"r": map[string]any{"tls": true}, // bare tls:true, not an object
+		}}},
+		{"http": map[string]any{"routers": map[string]any{
+			"r": map[string]any{"tls": map[string]any{"domains": []any{}}}, // no resolver
+		}}},
+	}
+	for _, doc := range cases {
+		stripCertResolvers(doc) // just assert no panic
+	}
+}
+
 func TestServer_MethodNotAllowed(t *testing.T) {
 	s := newTestServer(t, NewCache(nil))
 	for _, path := range []string{"/config", "/healthz", "/debug"} {

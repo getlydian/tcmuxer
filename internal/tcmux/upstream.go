@@ -14,7 +14,7 @@ import (
 // UserAgent is the User-Agent header sent on outbound upstream polls.
 // It defaults to a build-agnostic value and is overridden at startup
 // (see cmd/tcmuxer) so it carries the injected build version.
-var UserAgent = "tcmuxer/dev"
+var UserAgent = "tcmuxer/dev (+https://github.com/getlydian/tcmuxer)"
 
 // Upstream describes one config endpoint tcmuxer polls.
 type Upstream struct {

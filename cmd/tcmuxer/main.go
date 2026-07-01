@@ -49,7 +49,7 @@ type config struct {
 // run is the testable entry point. It blocks until ctx cancels or a
 // fatal error occurs; on clean shutdown it returns nil.
 func run(ctx context.Context, args []string, environ []string, stdout, stderr io.Writer) error {
-	tcmux.UserAgent = "tcmuxer/" + version
+	tcmux.UserAgent = "tcmuxer/" + version + " (+https://github.com/getlydian/tcmuxer)"
 
 	env := envMap(environ)
 

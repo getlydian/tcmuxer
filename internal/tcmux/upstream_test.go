@@ -297,7 +297,7 @@ func TestPoller_SendsUserAgent(t *testing.T) {
 	// UserAgent is a package var overridden at startup; pin it for the
 	// test and restore so we don't leak state into other tests.
 	prev := UserAgent
-	UserAgent = "tcmuxer/1.2.3-test"
+	UserAgent = "tcmuxer/1.2.3-test (+https://example.invalid/tcmuxer)"
 	defer func() { UserAgent = prev }()
 
 	gotUA := make(chan string, 1)
@@ -328,8 +328,8 @@ func TestPoller_SendsUserAgent(t *testing.T) {
 
 	select {
 	case ua := <-gotUA:
-		if ua != "tcmuxer/1.2.3-test" {
-			t.Fatalf("User-Agent = %q, want %q", ua, "tcmuxer/1.2.3-test")
+		if ua != UserAgent {
+			t.Fatalf("User-Agent = %q, want %q", ua, UserAgent)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("upstream never received a request")

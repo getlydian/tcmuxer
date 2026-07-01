@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+// UserAgent is the User-Agent header sent on outbound upstream polls.
+// It defaults to a build-agnostic value and is overridden at startup
+// (see cmd/tcmuxer) so it carries the injected build version.
+var UserAgent = "tcmuxer/dev"
+
 // Upstream describes one config endpoint tcmuxer polls.
 type Upstream struct {
 	ID        string
@@ -170,6 +175,7 @@ func fetchJSON(ctx context.Context, client *http.Client, url string) (map[string
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", UserAgent)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

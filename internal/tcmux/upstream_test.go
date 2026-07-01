@@ -293,6 +293,51 @@ func TestPoller_StalenessGrowsAcrossFailures(t *testing.T) {
 	}
 }
 
+func TestPoller_SendsUserAgent(t *testing.T) {
+	// UserAgent is a package var overridden at startup; pin it for the
+	// test and restore so we don't leak state into other tests.
+	prev := UserAgent
+	UserAgent = "tcmuxer/1.2.3-test"
+	defer func() { UserAgent = prev }()
+
+	gotUA := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case gotUA <- r.Header.Get("User-Agent"):
+		default:
+		}
+		w.WriteHeader(200)
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+
+	cache := NewCache(nil)
+	p := &Poller{Up: Upstream{
+		ID:       "u1",
+		URL:      srv.URL,
+		Interval: time.Hour, // one immediate poll is enough
+		Timeout:  time.Second,
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		p.Run(ctx, srv.Client(), cache, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		close(done)
+	}()
+
+	select {
+	case ua := <-gotUA:
+		if ua != "tcmuxer/1.2.3-test" {
+			t.Fatalf("User-Agent = %q, want %q", ua, "tcmuxer/1.2.3-test")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream never received a request")
+	}
+	cancel()
+	<-done
+}
+
 func TestPoller_StopsOnContextCancel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)

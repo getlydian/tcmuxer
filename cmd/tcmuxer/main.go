@@ -19,6 +19,10 @@ import (
 	"github.com/getlydian/tcmuxer/internal/tcmux"
 )
 
+// version is the build version, injected via -ldflags "-X main.version=..."
+// (see Dockerfile). It defaults to "dev" for local builds.
+var version = "dev"
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -45,6 +49,8 @@ type config struct {
 // run is the testable entry point. It blocks until ctx cancels or a
 // fatal error occurs; on clean shutdown it returns nil.
 func run(ctx context.Context, args []string, environ []string, stdout, stderr io.Writer) error {
+	tcmux.UserAgent = "tcmuxer/" + version
+
 	env := envMap(environ)
 
 	cfg := config{

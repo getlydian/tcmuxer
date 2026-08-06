@@ -53,6 +53,16 @@ func run(ctx context.Context, args []string, environ []string, stdout, stderr io
 
 	env := envMap(environ)
 
+	// -healthcheck runs the probe against an already-running tcmuxer and
+	// exits, rather than starting a server. It exists because the runtime
+	// image is distroless: /tcmuxer is the only executable present, so a
+	// compose `healthcheck:` has nothing else it could invoke. Handled
+	// before the main flag set so the probe never touches backend config
+	// (a probe must not require TCMUXER_STATIC_FILE to be valid).
+	if isHealthcheck(args) {
+		return runHealthcheck(ctx, args, env, stdout, stderr)
+	}
+
 	cfg := config{
 		listen:        envOr(env, "TCMUXER_LISTEN", ":80"),
 		backend:       envOr(env, "TCMUXER_BACKEND", "static"),

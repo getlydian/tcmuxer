@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -130,14 +131,79 @@ func (s *Server) serveConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// serveHealthz reports readiness. It returns 503 only in the cold-start
+// case — upstreams are known but not one of them has ever returned a
+// usable document, so /config is serving `{}` and Traefik has no routes.
+// A process that has real config but some failing upstreams stays 200:
+// it is degraded, not useless, and restarting it would drop the routes
+// it is still correctly serving. See Healthy for the full rationale.
+//
+// The body is JSON when the caller asks for it (Accept: application/json
+// or ?verbose), and otherwise the historical plain-text "ok"/"not ready"
+// line, so existing probes keep working unchanged.
 func (s *Server) serveHealthz(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	snap := s.cache.Snapshot()
+	h := Healthy(snap)
+
+	status := http.StatusOK
+	if !h.Ready {
+		status = http.StatusServiceUnavailable
+	}
+
+	wantJSON := r.URL.Query().Has("verbose") ||
+		strings.Contains(r.Header.Get("Accept"), "application/json")
+
+	if wantJSON {
+		payload := healthPayload{
+			Status:    statusWord(h.Ready),
+			Reason:    h.Reason,
+			Upstreams: h.Upstreams,
+			Good:      h.Good,
+			Stale:     h.Stale,
+			Errors:    h.Errors,
+		}
+		if t := oldestLastGood(snap); !t.IsZero() {
+			payload.OldestLastGood = t.UTC().Format(time.RFC3339Nano)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		if err := json.NewEncoder(w).Encode(payload); err != nil {
+			s.log.Warn("encode /healthz response", "err", err)
+		}
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = w.Write([]byte("ok\n"))
+	w.WriteHeader(status)
+	if h.Ready {
+		_, _ = w.Write([]byte("ok\n"))
+		return
+	}
+	_, _ = w.Write([]byte("not ready: " + h.Reason + "\n"))
+}
+
+// healthPayload is the JSON shape of a verbose /healthz response.
+type healthPayload struct {
+	Status         string   `json:"status"`
+	Reason         string   `json:"reason"`
+	Upstreams      int      `json:"upstreams"`
+	Good           int      `json:"good"`
+	Stale          int      `json:"stale"`
+	OldestLastGood string   `json:"oldestLastGood,omitempty"`
+	Errors         []string `json:"errors,omitempty"`
+}
+
+func statusWord(ready bool) string {
+	if ready {
+		return "ok"
+	}
+	return "not ready"
 }
 
 // debugUpstream is the per-upstream shape exposed on /debug. Times are

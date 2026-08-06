@@ -200,12 +200,81 @@ redeploy without it. No tcmuxer restart needed.
 ## Endpoints
 
 - `GET /config` — current merged Traefik config (JSON). What Traefik polls.
-- `GET /healthz` — 200 while the process is up. Does **not** depend on
-  upstream health (one bad app shouldn't fail tcmuxer's healthcheck and
-  trigger a restart loop).
+- `GET /healthz` — readiness. 200 when tcmuxer has a usable config to
+  serve, 503 only on cold start (see below).
 - `GET /debug` — JSON dump of discovered upstreams: last-good timestamp,
   staleness, last error per upstream, and cumulative merge collision
   counters.
+
+## Health checking
+
+`/healthz` answers one question: **has this process ever managed to
+build a routing table?** It is a cold-start check, not a rollup of
+upstream health.
+
+| State                                          | Status | Rationale                                                    |
+|------------------------------------------------|--------|--------------------------------------------------------------|
+| No upstreams discovered                        | `200`  | Nothing to mux is a valid steady state, not a fault.         |
+| At least one upstream has a last-known-good doc | `200`  | Real routes are being served, even if other upstreams fail.  |
+| Upstreams discovered, none ever succeeded       | `503`  | `/config` is `{}` — Traefik would install no routers at all. |
+
+The asymmetry is deliberate. tcmuxer keeps serving last-known-good config
+when an upstream blips, so one sick app must never fail tcmuxer's
+healthcheck and trigger a restart that drops routing for everyone else.
+But a task that has *never* succeeded has no last-known-good to fall back
+on: it serves an empty document, and every site behind Traefik 404s.
+That state can be silent and permanent — a task that comes up with a
+broken view of its network never re-resolves it, and an orchestrator that
+only checks "is the process running?" will happily leave it in place
+forever. Returning 503 is what lets the orchestrator replace it.
+
+Add `?verbose` (or `Accept: application/json`) for a JSON breakdown:
+
+```json
+{
+  "status": "not ready",
+  "reason": "no upstream has ever returned a usable config (2 discovered)",
+  "upstreams": 2,
+  "good": 0,
+  "stale": 0,
+  "errors": ["lookup app-a on 127.0.0.11:53: no such host"]
+}
+```
+
+### `tcmuxer -healthcheck`
+
+The runtime image is distroless — no shell, no `wget`, no `curl` — so a
+shell-form `test:` healthcheck cannot work. The binary therefore ships
+its own probe: `tcmuxer -healthcheck` GETs `/healthz` on the local
+listener and exits `0` (ready) or `1` (not ready), printing the server's
+reason so `docker inspect` shows *why* a container went unhealthy.
+
+The published image already declares a `HEALTHCHECK`, so a Swarm service
+picks it up with no extra configuration. To tune it, override in compose:
+
+```yaml
+  tcmuxer:
+    image: ghcr.io/getlydian/tcmuxer:edge
+    healthcheck:
+      test: ["CMD", "/tcmuxer", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+```
+
+Pair it with a `restart_policy` / `update_config` so an unhealthy task is
+actually replaced rather than merely flagged.
+
+| Flag / env                        | Default        | Purpose                                     |
+|-----------------------------------|----------------|---------------------------------------------|
+| `-healthcheck`                    | off            | Run the probe and exit instead of serving.  |
+| `-healthcheck-addr` / `TCMUXER_HEALTHCHECK_ADDR` | `-listen` | Address to probe.               |
+| `-healthcheck-timeout` / `TCMUXER_HEALTHCHECK_TIMEOUT` | `3s` | Probe timeout.             |
+
+`start_period` matters: give tcmuxer long enough to discover upstreams
+and complete a first poll, or a slow-starting app will fail the probe
+before it has had a fair chance to answer.
 
 ### `?certresolver=<name>` / `?stripcertresolvers` on `/config`
 
